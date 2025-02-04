@@ -2,90 +2,58 @@ from flask import Flask, request, jsonify
 import os
 import requests
 import signal
-import random
+import logging
 
-KUBE_API_SERVER = \
-    f"https://{os.environ['KUBERNETES_SERVICE_HOST']}:"\
-        f"{os.environ['KUBERNETES_SERVICE_PORT']}"
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-TOKEN_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-CA_CERT_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+# Get the ad server IP from environment variable
+AD_SERVER_IP = os.environ.get("AD_SERVER_IP")
+if not AD_SERVER_IP:
+    logger.error("AD_SERVER_IP environment variable is not set")
+    exit(1)
 
-# Read token for authentication
-with open(TOKEN_FILE, 'r') as f:
-    TOKEN = f.read().strip()
-
-headers = {
-    "Authorization": f"Bearer {TOKEN}"
-}
-
-namespace = os.environ.get('POD_NAMESPACE', 'default')
-
-def getPodList():
-    response = requests.get(
-        f"{KUBE_API_SERVER}/api/v1/namespaces/{namespace}/pods?"\
-            "labelSelector=app%3Dadserver",
-        headers=headers,
-        verify=CA_CERT_FILE
-    )
-    if response.status_code == 200:
-        pods = response.json()
-        pod_names = [pod["metadata"]["name"] for pod in pods.get("items", [])]
-        print("Response: ", pods)
-        print("Pods in namespace:", namespace)
-        print(pod_names)
-        if not pod_names:
-            print("No adserver pods are found")
-            return None
-        return pod_names
-    else:
-        print("Failed to get pods. Status code:", response.status_code)
-        print("Response:", response.text)
-        return None
-
+# Flask app
 app = Flask(__name__)
 
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>", methods=["GET", "POST"])
 def to_adserver(path):
-    user_id = request.args.get("userID")
-    host = request.args.get("host")
-
-    replicas = getPodList()
-    if not replicas:
-        return jsonify({"error": "Couldn't get the pod list"}), 500
-    
-    # Special routing logic. It is necessary for requests consistency. For
-    # example, multiple requests from the same user we want to send to the same
-    # server, to avoid showing duplicate banners without doing any sync via
-    # KV-stores.
-    if host:
-        target = host
-    elif user_id and user_id.isdigit():
-        target_index = int(user_id) % len(replicas)
-        target = replicas[target_index]
-    else:
-        target = random.choice(replicas)
-    target += '.ad-svc'
-
+    """
+    Forward requests to the ad server.
+    """
     try:
-        print("Forwarding to {}".format(target))
+        # Construct the target URL
+        target_url = f"http://{AD_SERVER_IP}/{path}"
+        logger.info(f"Forwarding to {target_url}")
+
+        # Forward the request to the ad server
         response = requests.request(
             method=request.method,
-            url=f"http://{target}/{path}",
+            url=target_url,
             headers=request.headers,
             params=request.args,
+            data=request.get_data(),
             timeout=5
         )
+        # Return the response from the ad server
         return response.content, response.status_code, response.headers.items()
     except Exception as e:
-        print("Error during forward: {}".format(e))
+        logger.error(f"Error during forward: {e}")
         return jsonify({"error": str(e)}), 500
 
 def terminate(signal, frame):
-    print("Terminating")
-    sys.exit(0)
+    """
+    Handle termination signals.
+    """
+    logger.info("Terminating")
+    exit(0)
 
 if __name__ == "__main__":
+    # Handle termination signals
     signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
+
+    # Start the Flask app
     app.run(host="0.0.0.0", port=80)
