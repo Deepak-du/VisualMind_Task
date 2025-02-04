@@ -34,13 +34,6 @@ WORKDIR /app
 COPY adserver.cpp .
 COPY adserver.hpp .
 
-# Create directory and copy geodata into the container
-RUN mkdir -p /mnt/adserver_geodata
-COPY geodata /mnt/adserver_geodata/
-
-# Verify that geodata exists inside the container
-RUN ls -lah /mnt/adserver_geodata/
-
 # Compile the C++ application (production build with main())
 RUN g++ -std=c++17 -o adserver adserver.cpp -I/usr/local/include -L/usr/local/lib \
     -lboost_system -lboost_json -lpthread
